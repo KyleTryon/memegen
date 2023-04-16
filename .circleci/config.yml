@@ -2,7 +2,7 @@ version: 2.1
 
 jobs:
   test:
-    working_directory: ~/memegen
+    
 
     docker:
       - image: cimg/python:3.11.2
@@ -47,8 +47,103 @@ jobs:
       - run:
           name: Building site
           command: make site
+  docker-build:
+    docker:
+      - image: cimg/base:current
 
+    steps:
+        - checkout
+        
+        - setup_remote_docker
+
+        - restore_cache:
+            keys:
+                - v1-{{ .Branch }}-{{ checksum "Containerfile" }}
+
+        - run:
+            name: Building Docker image
+            command: |
+                # Build the image with the tag "latest" and the tag of the current git tag (if any)
+                TAGS=$(for tag in latest ${CIRCLE_TAG}; do echo "-t memegen:$tag"; done)
+                docker build ${TAGS} -f Containerfile .
+        
+        - run:
+            name: Running Docker image
+            command: docker run -d -p 5000:5000 memegen
+            background: true
+        
+        - run:
+            name: Validate API is running
+            command: |
+                MAX_TRIES=10
+                for i in $(seq 1 $MAX_TRIES); do
+                    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:5000/images/preview.jpg")
+                    if [ $http_code = "200" ]; then
+                        exit 0
+                    fi
+                    sleep 5
+                done
+                echo "Failed to validate API is running after $MAX_TRIES tries"
+                exit 1
+
+        - run:
+            name: Stopping Docker image
+            command: docker stop $(docker ps -q)
+        
+        - run:
+            name: Saving Docker image
+            command: docker save memegen > memegen.tar
+        
+        - save_cache:
+            key: v1-{{ .Branch }}-{{ checksum "Containerfile" }}
+            paths:
+                - memegen.tar
+
+        - persist_to_workspace:
+            root: .
+            paths:
+                - memegen.tar
+
+  docker-deploy:
+    docker:
+      - image: cimg/base:current
+
+    steps:
+        - checkout
+        
+        - setup_remote_docker
+
+        - attach_workspace:
+            at: .
+
+        - run:
+            name: Loading Docker image
+            command: docker load < memegen.tar
+
+        - run:
+            name: Pushing Docker image
+            command: |
+                echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+                docker push memegen
+    
+    
 workflows:
     default:
         jobs:
-            - test
+            - test:
+                filters:
+                    tags:
+                        only: /.*/
+            - docker-build:
+                filters:
+                    tags:
+                        only: /.*/
+            - docker-deploy:
+                requires:
+                    - test
+                    - docker-build
+                filters:
+                    tags:
+                        only: /v.*/
+                    branches:
+                        ignore: /.*/
