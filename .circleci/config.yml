@@ -1,7 +1,7 @@
 version: 2.1
 
 jobs:
-  build:
+  test:
     working_directory: ~/memegen
 
     docker:
@@ -47,3 +47,8 @@ jobs:
       - run:
           name: Building site
           command: make site
+
+workflows:
+    default:
+        jobs:
+            - test
